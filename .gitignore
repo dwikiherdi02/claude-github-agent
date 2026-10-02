@@ -1,0 +1,15 @@
+# Ignore folder contents, keep the folders themselves (via .gitkeep)
+attachment/*
+!attachment/.gitkeep
+
+guide-issues/*
+!guide-issues/.gitkeep
+
+temp/*
+!temp/.gitkeep
+
+# Personal Claude Code settings (settings.json stays tracked)
+.claude/settings.local.json
+
+# Git Bash crash dumps
+*.stackdump
