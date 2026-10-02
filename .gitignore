@@ -11,5 +11,9 @@ temp/*
 # Personal Claude Code settings (settings.json stays tracked)
 .claude/settings.local.json
 
+# Developer-only command (not part of the shipped agent)
+.claude/commands/versioning.md
+.claude/commands/conventional-commit.md
+
 # Git Bash crash dumps
 *.stackdump
