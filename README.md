@@ -36,6 +36,7 @@ github-agent/
 ├── CLAUDE.md                     # Identitas agent, Rule 1-7, protokol eksplorasi 8 fase, larangan keras
 ├── GUIDE.md                      # Contoh prompt untuk setiap command & rule
 ├── README.md                     # Dokumen ini
+├── temp/                         # Clone sementara branch PR untuk /review-pr (dihapus otomatis)
 └── .claude/
     ├── settings.json             # Izin tool GitHub MCP (allow/deny), dibagikan lewat repo
     ├── settings.local.json       # Pengaturan lokal: model, effort, izin tambahan
@@ -69,8 +70,9 @@ github-agent/
 | Kebutuhan | Fungsi | Cek / Instal |
 |---|---|---|
 | **Claude Code** (CLI atau ekstensi IDE) | Menjalankan workspace ini | Ikuti [panduan instalasi resmi](https://docs.claude.com/en/docs/claude-code/setup); cek dengan `claude --version` |
-| **Git** (di Windows: Git for Windows) | Dipakai `/fix-issue` dan `/create-pr` untuk commit & push lokal | `git --version` |
+| **Git** (di Windows: Git for Windows) | Dipakai `/fix-issue` dan `/create-pr` untuk commit & push lokal, serta `/review-pr` untuk clone branch PR | `git --version` |
 | **Akun GitHub + Personal Access Token (PAT)** | Autentikasi GitHub MCP server | Buat di *GitHub → Settings → Developer settings → Personal access tokens*. Scope minimal: `repo` (repo privat) atau akses *Pull requests*, *Issues*, *Contents* (read) bila memakai fine-grained token. `/fix-issue` dan `/create-pr` juga butuh izin push ke repo target |
+| **GitHub CLI (`gh`)** + `gh auth login` | `/review-pr` meng-clone branch PR (`gh repo clone`, `gh pr checkout`); juga dipakai skill `pr-feedback-resolver` | `gh --version`, lalu `gh auth login` |
 | **GitHub MCP server** | Semua tool `mcp__github__*` (baca PR, komentar, buat issue/branch/PR) | Lihat langkah di bawah |
 
 ### Daftarkan GitHub MCP server
@@ -94,7 +96,6 @@ claude mcp list        # server "github" harus berstatus connected
 
 | Kebutuhan | Dipakai untuk |
 |---|---|
-| **GitHub CLI (`gh`)** + `gh auth login` | Skill `pr-feedback-resolver` (lihat [Skill](#skill)) |
 | **Python 3** | `settings.local.json` mengizinkan `Bash(python3 *)` bila diperlukan skrip bantu |
 | **Plugin Claude Code** | Lihat [Plugin](#plugin). Tidak ada yang wajib untuk command bawaan workspace ini |
 
@@ -106,7 +107,7 @@ MCP GitHub yang terhubung **tidak punya tool tulis-file jarak jauh**. Perubahan 
 git clone https://github.com/<org>/<repo>.git
 ```
 
-`/review-pr` dan `/create-issue` tidak butuh clone; keduanya hanya memakai API GitHub.
+`/create-issue` tidak butuh clone. `/review-pr` meng-clone branch PR sendiri ke `temp/` dan menghapusnya setelah selesai, jadi Anda tidak perlu clone manual.
 
 ---
 
@@ -133,7 +134,7 @@ Command berada di `.claude/commands/` dan dipanggil dengan `/nama-command <argum
 
 | Command | Fungsi | Contoh |
 |---|---|---|
-| `/review-pr` | Menjalankan **pipeline 4 tahap** (collect → analyze → write → post) dan menghasilkan komentar baris **pending** pada PR. Tidak pernah submit, approve, atau request changes | `/review-pr https://github.com/org/repo/pull/123` |
+| `/review-pr` | Menjalankan **pipeline 4 tahap** (clone → analyze → write → post) dan menghasilkan komentar baris **pending** pada PR, lalu menghapus folder clone di `temp/`. Tidak pernah submit, approve, atau request changes | `/review-pr https://github.com/org/repo/pull/123` |
 | `/create-issue` | Mencari duplikat, memilih template (Bug / Enhancement / Performance / Security), memilih label yang ada di repo, lalu membuat issue dalam Bahasa Indonesia | `/create-issue Tombol "Simpan" tidak merespon saat diklik dua kali. Repo: org/repo` |
 | `/fix-issue` | Alur end-to-end: baca issue → eksplorasi konvensi → **konfirmasi rencana** → buat branch → implementasi via git lokal → commit & push → buka **draft PR** | `/fix-issue Implementasikan issue #45 di repo org/repo` |
 | `/create-pr` | Membuka PR dari branch yang sudah punya commit. Memverifikasi ada commit di depan base (tidak pernah membuka PR kosong) dan meminta konfirmasi sebelum membuka | `/create-pr Buka PR untuk branch fix/issue-88-typo ke base develop di repo org/repo, terkait issue #88` |
@@ -147,12 +148,14 @@ Empat subagent di `.claude/agents/` membentuk pipeline `/review-pr`. Setiap taha
 
 | Tahap | Agent | Model | Tool yang diizinkan | Tugas |
 |---|---|---|---|---|
-| 1 | `pr-data-collector` | Haiku | `pull_request_read`, `get_file_contents`, `get_commit`, `list_commits`, `list_pull_requests`, `search_code`, `issue_read` | Mengumpulkan data mentah: metadata PR, **issue tertaut**, diff, isi file lengkap, definisi fungsi/konstanta yang dipanggil, kandidat duplikasi, komentar existing. Tanpa analisis |
-| 2 | `pr-code-analyzer` | Sonnet (effort tinggi) | `Read`, `Grep`, `Glob` + tool baca GitHub | Analisis mendalam dengan Rule 1-7, 8 fase protokol eksplorasi, dan *Pre-Comment Verification Gate*. Menghasilkan **Verification Trace** dan temuan terverifikasi |
+| 1 | `pr-data-collector` | Haiku | `Bash` (`gh`, `git`), `pull_request_read`, `issue_read`, `list_commits` | Meng-clone **branch PR** (bukan branch tujuan) ke `temp/pr-<repo>-<nomor>-<timestamp>/`, lalu mengembalikan path clone, metadata PR, **issue tertaut**, diff terhadap base, komentar existing, dan commit. Tanpa analisis |
+| 2 | `pr-code-analyzer` | Sonnet (effort tinggi) | `Read`, `Grep`, `Glob`, `Bash` (git read-only), `pull_request_read`, `issue_read` | Analisis mendalam atas kode di folder clone: kode yang berubah (berdasarkan diff dan deskripsi PR/issue) plus setiap fungsi/service/helper di file lain yang dipanggilnya, dengan Rule 1-7, 8 fase protokol eksplorasi, dan *Pre-Comment Verification Gate*. Menghasilkan **Verification Trace** dan temuan terverifikasi |
 | 3 | `pr-feedback-writer` | Sonnet (effort sedang) | `Read`, `Grep`, `Glob` | Memformat temuan menjadi komentar final sesuai `comment-format.md` (tag severity, Masalah / Mengapa Bermasalah / Saran Perbaikan, blok ` ```suggestion `, evaluasi keamanan package) |
 | 4 | `pr-comment-poster` | Haiku | `pull_request_read`, `pull_request_review_write`, `add_comment_to_pending_review` | Membuat *pending review* dan menambahkan tiap komentar sebagai komentar baris. **Tidak** men-submit |
 
-Laporan akhir pipeline mencakup: jumlah temuan lolos verifikasi vs. terposting, ID review pending, ringkasan Verification Trace (callee tervalidasi vs. `unverified`), serta Scope Contract dan hasil Phase 8.
+Setelah Stage 4 (atau bila pipeline berhenti lebih awal setelah clone dibuat), orchestrator menghapus folder clone di `temp/` (**cleanup**). Penghapusan hanya untuk folder `temp/pr-*`.
+
+Laporan akhir pipeline mencakup: jumlah temuan lolos verifikasi vs. terposting, ID review pending, ringkasan Verification Trace (callee tervalidasi vs. `unverified`), Scope Contract dan hasil Phase 8, serta hasil cleanup.
 
 ---
 
@@ -191,7 +194,7 @@ Tag severity komentar: `[KRITIS]`, `[MAJOR]`, `[MINOR]`, `[SARAN]`.
 
 | Skill | Fungsi |
 |---|---|
-| `pr-review-pipeline` | Menjalankan pipeline 4 agent (`pr-data-collector` → `pr-code-analyzer` → `pr-feedback-writer` → `pr-comment-poster`) secara berurutan pada sebuah PR dan menyimpan hasilnya sebagai **pending review**. Aktif otomatis saat Anda meminta review PR dengan agent atau memberi link/nomor PR. Aturan kerasnya sama dengan `/review-pr`: tidak submit, approve, atau request changes, dan tidak memposting summary kecuali diminta |
+| `pr-review-pipeline` | Menjalankan pipeline 4 agent (`pr-data-collector` → `pr-code-analyzer` → `pr-feedback-writer` → `pr-comment-poster`) secara berurutan pada sebuah PR (branch PR di-clone ke `temp/`, lalu dihapus di akhir) dan menyimpan hasilnya sebagai **pending review**. Aktif otomatis saat Anda meminta review PR dengan agent atau memberi link/nomor PR. Aturan kerasnya sama dengan `/review-pr`: tidak submit, approve, atau request changes, dan tidak memposting summary kecuali diminta |
 
 ### Skill global (opsional)
 
@@ -282,6 +285,8 @@ Catatan: pembatasan submit/approve pada review dijaga oleh **instruksi** (CLAUDE
 | `/fix-issue` berhenti dan meminta clone | Normal: MCP tidak bisa menulis file jarak jauh. Clone repo target dulu, lalu ulangi |
 | `/create-pr` menolak membuka PR | Branch tidak punya commit di depan base. Commit dan push dulu |
 | Komentar review muncul dalam Bahasa Inggris | Tidak seharusnya terjadi. Kebijakan Bahasa Indonesia berlaku mutlak. Minta agent menulis ulang |
+| `/review-pr` gagal di Stage 1 (clone) | `gh` belum login atau tidak punya akses ke repo. Jalankan `gh auth status` / `gh auth login` |
+| Folder `temp/pr-*` tertinggal | Cleanup gagal (mis. file terkunci di Windows). Hapus manual folder yang disebut di laporan akhir |
 | Komentar tidak muncul di tab *Files changed* | Review masih **pending**. Buka PR → *Review changes* untuk melihat dan men-submit-nya secara manual |
 
 ---
